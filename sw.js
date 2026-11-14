@@ -1,5 +1,5 @@
 // Ofis Asistanı kabuğu – yalnız kabuk dosyalarını saklar (uygulama verisi buraya girmez; iş kayıtları Google'da).
-const AD = 'oa-kabuk-v1';
+const AD = 'oa-kabuk-v2';
 const DOSYALAR = ['./', 'index.html', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'apple-touch-icon.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(AD).then(c => c.addAll(DOSYALAR))); self.skipWaiting(); });
 self.addEventListener('activate', e => {
