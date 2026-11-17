@@ -16,13 +16,15 @@
   html, body { margin: 0; height: 100%; background: #1f4e79; overflow: hidden; }
   iframe { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
   #yuk { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
-         color: #fff; font: 600 18px system-ui, sans-serif; gap: 14px; }
+         color: #fff; font: 600 18px system-ui, sans-serif; gap: 14px; text-align: center; padding: 24px; box-sizing: border-box; }
   #yuk img { width: 96px; height: 96px; }
+  #yuk small { font-weight: 400; font-size: 14px; opacity: .85; max-width: 320px; }
+  #yuk button { display: none; font: 600 16px system-ui, sans-serif; padding: 10px 22px; border: 0; border-radius: 10px; background: #fff; color: #1f4e79; }
   #ayarYok { display: none; padding: 24px; color: #fff; font: 16px system-ui, sans-serif; }
 </style>
 </head>
 <body>
-<div id="yuk"><img src="icon-192.png" alt=""><span>Ofis Asistanı açılıyor…</span></div>
+<div id="yuk"><img src="icon-192.png" alt=""><span id="yukYazi">Ofis Asistanı açılıyor…</span><small id="yukAlt"></small><button type="button" id="yukTekrar">Tekrar dene</button></div>
 <div id="ayarYok">Uygulama adresi yazılmamış. GitHub'da index.html içindeki <b>UYGULAMA</b> satırına Apps Script /exec adresini yapıştırın.</div>
 <iframe id="app" title="Ofis Asistanı"
         allow="camera; microphone; geolocation; clipboard-read; clipboard-write; fullscreen; web-share"></iframe>
@@ -30,14 +32,92 @@
   // ===== TEK DEĞİŞTİRİLECEK SATIR: Apps Script web uygulamasının /exec adresi =====
   const UYGULAMA = 'https://script.google.com/macros/s/AKfycbz5FL7J6QEFCv2OHTrYeX6-_GVhxoodENnYsjaEQH662EdmE1eILhDN3_mRx0APAxh6gw/exec';
   // =================================================================================
-  const f = document.getElementById('app');
-  if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(UYGULAMA)) {
-    document.getElementById('yuk').style.display = 'none';
-    document.getElementById('ayarYok').style.display = 'block';
-  } else {
-    f.src = UYGULAMA + location.search;   // QR bağlantısı parametreleri (mesaiqr, k) uygulamaya geçer
-    f.addEventListener('load', () => { const y = document.getElementById('yuk'); if (y) y.remove(); });
+  /* KABUK v3 (17.11.2026) – SOĞUK AÇILIŞ
+     Uygulama sayfası Apps Script'ten bir kez indirilir, telefonda saklanır ve sonraki açılışlarda oradan açılır
+     (internet olmasa da açılır, internet varken de daha hızlı açılır). Her açılışta arka planda "yeni sürüm var mı" diye
+     bakılır; varsa indirilir ve uygulama boştayken (ana ekran) kendiliğinden yenilenir.
+     Uygulama kodu bu depoda DURMAZ; yalnız bu kabuk durur. Uygulama güncellemesi yine yalnız Apps Script'e yüklenir.
+     Acil durum: adresin sonuna ?eski=1 yazılırsa eski yöntemle (doğrudan Apps Script) açılır. */
+  const KABUK_NO = 3, DEPO = 'oa-uygulama', KOPYA = './uygulama-kopya.json';
+  const f = document.getElementById('app'), yuk = document.getElementById('yuk');
+  let AKTIF = null, BEKLEYEN = null, KONTROL = false, SON_KONTROL = 0;
+
+  const yaz = (a, b, tekrar) => { if (!yuk.isConnected) document.body.appendChild(yuk);
+    document.getElementById('yukYazi').textContent = a; document.getElementById('yukAlt').textContent = b || '';
+    document.getElementById('yukTekrar').style.display = tekrar ? 'inline-block' : 'none'; };
+  f.addEventListener('load', () => { if (f.src || f.srcdoc) yuk.remove(); });
+  document.getElementById('yukTekrar').onclick = () => location.reload();
+
+  /** Saklanan kopya gerçekten uygulama sayfası mı (yarım inmiş / hata sayfası saklanmasın). */
+  const gecerli = k => !!(k && typeof k.surum === 'string' && k.surum && typeof k.html === 'string' && k.html.length > 100000 &&
+    k.html.indexOf('window.__TESHIS') > 0 && /<\/html>\s*$/.test(k.html));
+  async function oku() {
+    try { const c = await caches.open(DEPO), r = await c.match(KOPYA); if (!r) return null; const k = await r.json(); return gecerli(k) ? k : null; }
+    catch (e) { return null; }
   }
+  async function sakla(k) {
+    try { const c = await caches.open(DEPO);
+      await c.put(KOPYA, new Response(JSON.stringify({ surum: k.surum, html: k.html, zaman: Date.now() }), { headers: { 'Content-Type': 'application/json' } })); return true; }
+    catch (e) { return false; }
+  }
+  /** Apps Script'ten sürüm bilgisi ('surum') ya da sayfanın kendisi ('html'). */
+  async function getir(ne, ms) {
+    const ac = new AbortController(), t = setTimeout(() => ac.abort(), ms);
+    try {
+      const r = await fetch(UYGULAMA + '?kabuk=' + ne, { redirect: 'follow', cache: 'no-store', signal: ac.signal });
+      if (!r.ok) throw new Error('sunucu ' + r.status);
+      const j = await r.json();
+      if (!j || !j.ok) throw new Error((j && j.hata) || 'yanıt anlaşılmadı');
+      return j;
+    } finally { clearTimeout(t); }
+  }
+  /** Saklanan kopyayı göster. Uygulama, sunucu adresini ve parametreleri window.parent.AKG_KABUK'tan okur. */
+  function goster(k) {
+    AKTIF = k.surum;
+    window.AKG_KABUK = { api: UYGULAMA, param: location.search, surum: k.surum, kabuk: KABUK_NO,
+      paramSil: () => { try { history.replaceState(null, '', location.pathname); } catch (e) {} },
+      yenile: () => location.reload() };
+    f.removeAttribute('src'); f.srcdoc = k.html;
+  }
+  /** Eski yöntem: uygulama doğrudan Apps Script'ten (internet gerekir). */
+  function eskiMod() { AKTIF = null; window.AKG_KABUK = null; f.removeAttribute('srcdoc'); f.src = UYGULAMA + location.search; }
+  /** Uygulama boşta mı? (ana ekranda, açık pencere / gönderilen kayıt yok). Uygulama bozuksa / cevap vermiyorsa "boşta" sayılır ki yenisi gelebilsin. */
+  function mesgul() { try { const w = f.contentWindow; return typeof w.AKG_MESGUL === 'function' && !!w.AKG_MESGUL(); } catch (e) { return false; } }
+  function uygula() {
+    if (!BEKLEYEN) return;
+    if (BEKLEYEN.surum === AKTIF) { BEKLEYEN = null; return; }
+    if (!AKTIF || mesgul()) return;          // eski yöntemle açıksa ya da uygulama meşgulse sonraya
+    const y = BEKLEYEN; BEKLEYEN = null; goster(y);
+  }
+  /** Yeni sürüm var mı? Varsa indir + sakla; uygulama boştaysa hemen, değilse boşa çıkınca yenilenir. */
+  async function kontrol() {
+    if (KONTROL || !navigator.onLine) return;
+    KONTROL = true; SON_KONTROL = Date.now();
+    try {
+      const s = await getir('surum', 20000);
+      if (s.surum && s.surum !== AKTIF && !(BEKLEYEN && BEKLEYEN.surum === s.surum)) {
+        const y = await getir('html', 240000);
+        if (gecerli(y) && await sakla(y)) BEKLEYEN = y;
+      }
+      uygula();
+    } catch (e) { /* internet yok / sunucu eski sürüm: saklanan kopyayla devam */ }
+    KONTROL = false;
+  }
+
+  (async function basla() {
+    if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(UYGULAMA)) { yuk.style.display = 'none'; document.getElementById('ayarYok').style.display = 'block'; return; }
+    if (new URLSearchParams(location.search).has('eski') || !('caches' in window)) return eskiMod();
+    const k = await oku();
+    if (k) { goster(k); kontrol(); }
+    else if (!navigator.onLine) {
+      yaz('İnternet bağlantısı yok', 'Uygulamanın bu telefonda ilk kez açılması için internet gerekir. Bir kez açıldıktan sonra internetsiz de açılır.', true);
+      window.addEventListener('online', () => location.reload(), { once: true });
+    } else { eskiMod(); kontrol(); }           // ilk açılış: bugünkü gibi aç, kopyayı arka planda indir (sonraki açılış kopyadan)
+    setInterval(uygula, 20000);
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState !== 'visible') return; uygula(); if (Date.now() - SON_KONTROL > 30 * 60000) kontrol(); });
+    window.addEventListener('online', () => { if (Date.now() - SON_KONTROL > 5 * 60000) kontrol(); });
+    try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); } catch (e) {}
+  })();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
 </body>
